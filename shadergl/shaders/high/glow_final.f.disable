@@ -1,0 +1,14 @@
+#include <common.fh>
+
+
+void main()
+{
+	half4 blur = tex2D(S_input_rt, IO_uv0).rgba;
+	//_IF(S_diffuse_bool)
+	{
+		float4 dirt = tex2D(S_diffuse_map, IO_uv0).rgba;
+		blur.rgb = blur.rgb + blur.rgb* dirt.rgb * 5;
+	}
+	OUT_Color = half4(1, 1, 1, 0); // half4(blur.rgb, 0);
+// 	OUT_Color.r = 0.5;
+}

@@ -1,0 +1,489 @@
+#include <common.fh>
+
+// #undef GFX_CHROMA_SAMPLES
+
+#ifndef GFX_CHROMA_SAMPLES
+	const int samples = 4;
+	const vec3 color[4] = {
+		vec3(0.667,		-0.083,		0.417),
+		vec3(0.833,		0.583,		0.583),
+		vec3(0.583,		0.833,		0.583),
+		vec3(-0.083,	0.667,		0.417),
+	};
+#endif
+
+void main()
+{
+	const bool Automatic = false;
+	
+	vec2 texcoord = GetFragUV();
+	
+	float Aspect = V_viewportpixelsize.y / V_viewportpixelsize.x;
+// 	float Pixel = 1.0f / V_viewportpixelsize.x;
+	float Pixel = 1.0f / 1920;
+	
+	// Convert UVs to centered coordinates with correct Aspect Ratio
+	vec2 RadialCoord = texcoord;
+	RadialCoord -= vec2(0.5);
+	RadialCoord.y *= Aspect;
+	
+	// Generate radial mask from center (0) to the corner of the screen (1)
+	float Mask = pow(2.0 * length(RadialCoord) * inversesqrt(Aspect * Aspect + 1.0), U_gamma);
+	
+	float OffsetBase = Mask * U_scale * Pixel * 2.0;
+	if (abs(OffsetBase) < Pixel) {
+		OUT_Color = half4(1, 0, 0, 1); //RTResolve(S_input_rt);
+	}
+	else {
+		vec3 BluredImage = vec3(0);
+		
+#ifdef GFX_CHROMA_SAMPLES
+		const int samples = U_samples;
+#endif
+		
+		for (int i = 0; i < samples; ++i) {
+			float p = float(i) / (samples - 1);
+			float Offset = OffsetBase * (p - 0.5) + 1.0;
+			
+			// Scale UVs at center
+			vec2 Position = RadialCoord / Offset;
+			// Convert aspect ratio back to square
+			Position.y /= Aspect;
+			// Convert centered coordinates to UV
+			Position += 0.5;
+			
+#ifdef GFX_CHROMA_SAMPLES
+			vec3 color = V_color[i].rgb;
+#else
+			vec3 color = color[i].rgb;
+#endif
+			BluredImage += color * RTResolve(S_input_rt, Position).rgb;
+		}
+		BluredImage *= 2.0 / samples;
+		
+		OUT_Color.rgb = half3(1, 0, 0); //BluredImage;
+		OUT_Color.a = 0;
+	}
+}
+#include <common.fh>
+
+vec3 aces_approx(vec3 v)
+{
+    v *= 0.6f;
+    float a = 2.51f;
+    float b = 0.03f;
+    float c = 2.43f;
+    float d = 0.59f;
+    float e = 0.14f;
+    return clamp((v*(a*v+b))/(v*(c*v+d)+e), 0.0f, 1.0f);
+}
+
+vec3 uncharted2_tonemap_partial(vec3 x)
+{
+    float A = 0.15f;
+    float B = 0.50f;
+    float C = 0.10f;
+    float D = 0.20f;
+    float E = 0.02f;
+    float F = 0.30f;
+    return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F;
+}
+
+vec3 uncharted2_filmic(vec3 v)
+{
+    float exposure_bias = 2.0f;
+    vec3 curr = uncharted2_tonemap_partial(v * exposure_bias);
+
+    vec3 W = vec3(11.2f);
+    vec3 white_scale = vec3(1.0f) / uncharted2_tonemap_partial(W);
+    return curr * white_scale;
+}
+
+vec4 msaa()
+{
+#ifdef MAIN_MSAA
+	vec4 col = TO_sRGB(saturate(texelFetch(S_input_rt, ivec2(gl_FragCoord.xy), 0)));
+	for (int i = 1; i < MAIN_MSAA; ++i) {
+		col += TO_sRGB(saturate(texelFetch(S_input_rt, ivec2(gl_FragCoord.xy), i)));
+	}
+	col /= vec4(MAIN_MSAA);
+	col = TO_linearRGB(col);
+	return col;
+#else
+	return vec4(1, 1, 0, 1);
+#endif
+}
+
+vec4 ssaa(ivec2 off)
+{
+	#if defined(AAMODE_SSAA_2X)
+	return TO_sRGB(saturate(texelFetch(S_input_rt, ivec2(gl_FragCoord.xy) * ivec2(1, 2) + off, 0)));
+	#elif defined(AAMODE_SSAA_4X)
+	return TO_sRGB(saturate(texelFetch(S_input_rt, ivec2(gl_FragCoord.xy) * ivec2(2) + off, 0)));
+	#elif defined(AAMODE_SSAA_6X)
+	return TO_sRGB(saturate(texelFetch(S_input_rt, ivec2(gl_FragCoord.xy) * ivec2(2, 3) + off, 0)));
+	#elif defined(AAMODE_SSAA_9X)
+	return TO_sRGB(saturate(texelFetch(S_input_rt, ivec2(gl_FragCoord.xy) * ivec2(3) + off, 0)));
+	#else
+	return vec4(1, 1, 0, 1);
+	#endif
+}
+
+void main()
+{
+	//TODO @Timon optimize
+	vec4 col;
+	#if defined(UPMODE_FSR)
+	OUT_Color = RTResolve(S_input_rt);
+	#elif defined(AAMODE_SSAA_2X)
+	col  = ssaa(ivec2(0, 0));
+	col += ssaa(ivec2(0, 1));
+	col /= vec4(2);
+	col = TO_linearRGB(col);
+	OUT_Color = col;
+	#elif defined(AAMODE_SSAA_4X)
+	col  = ssaa(ivec2(0, 0));
+	col += ssaa(ivec2(1, 0));
+	col += ssaa(ivec2(1, 1));
+	col += ssaa(ivec2(0, 1));
+	col /= vec4(4);
+	col = TO_linearRGB(col);
+	OUT_Color = col;
+	#elif defined(AAMODE_SSAA_6X)
+	col  = ssaa(ivec2(0, 0));
+	col += ssaa(ivec2(1, 0));
+	col += ssaa(ivec2(1, 1));
+	col += ssaa(ivec2(0, 1));
+	col += ssaa(ivec2(0, 2));
+	col += ssaa(ivec2(1, 2));
+	col /= vec4(6);
+	col = TO_linearRGB(col);
+	OUT_Color = col;
+	#elif defined(AAMODE_SSAA_9X)
+	col  = ssaa(ivec2(0, 0));
+	col += ssaa(ivec2(1, 0));
+	col += ssaa(ivec2(2, 0));
+	col += ssaa(ivec2(2, 1));
+	col += ssaa(ivec2(1, 1));
+	col += ssaa(ivec2(0, 1));
+	col += ssaa(ivec2(0, 2));
+	col += ssaa(ivec2(1, 2));
+	col += ssaa(ivec2(2, 2));
+	col /= vec4(9);
+	col = TO_linearRGB(col);
+	OUT_Color = col;
+	#elif defined(MAIN_MSAA)
+	OUT_Color = msaa();
+	#else
+	OUT_Color = RTResolve(S_input_rt);
+	#endif
+	if (U_gamma != 1.0) {
+		OUT_Color = pow(OUT_Color, vec4(U_gamma));
+	}
+
+	// ACES tonemap
+	//OUT_Color.rgb = aces_approx(OUT_Color.rgb);
+
+	// Uncharted tonemap
+	OUT_Color.rgb = uncharted2_filmic(OUT_Color.rgb);
+
+	// contrast
+	// OUT_Color = clamp((OUT_Color - 0.5f) * 1.04f + 0.5f, 0.0f, 1.0f);
+
+	// brightness
+	OUT_Color.rgb = OUT_Color.rgb * 2.0f;
+}
+#include <common.fh>
+
+
+void main()
+{
+	half4 blur = tex2D(S_input_rt, IO_uv0).rgba;
+	//_IF(S_diffuse_bool)
+	{
+		float4 dirt = tex2D(S_diffuse_map, IO_uv0).rgba;
+		blur.rgb = blur.rgb + blur.rgb* dirt.rgb * 5;
+	}
+	OUT_Color = half4(1, 1, 1, 0); // half4(blur.rgb, 0);
+// 	OUT_Color.r = 0.5;
+}
+#include <common.fh>
+
+
+
+void main()
+{
+	half4 OutColor = half4(0);
+	CONST float TexelSize = /*g_BlurWidth*/1.0f / V_viewportpixelsize.x;
+	half4 pixels = tex2D(S_input_rt, IO_uv0).rgba;
+	pixels.rgb = pixels.rgb+tex2D(S_input_rt, IO_uv0 + float2(TexelSize, 0)).rgb + tex2D(S_input_rt, IO_uv0 + float2(-TexelSize, 0)).rgb + tex2D(S_input_rt, IO_uv0 + float2(0, TexelSize)).rgb + tex2D(S_input_rt, IO_uv0 + float2(0, -TexelSize)).rgb;
+
+	//ivec2 pix = ivec2(floor(gl_FragCoord.xy) * 2);
+	//half4 pixels = texelFetch(S_input_rt, pix + ivec2(0, 0),0).rgba+ texelFetch(S_input_rt, pix + ivec2(1, 0), 0).rgba+ texelFetch(S_input_rt, pix + ivec2(0, 1), 0).rgba+ texelFetch(S_input_rt, pix + ivec2(1, 1), 0).rgba;
+
+	pixels.rgb = pixels.rgb*0.2f;
+
+	CONST half4 inPixelHDR = pixels;// tex2D(S_input_rt, IO_uv0).rgba; // alpha is extra glowmask
+//	vec4 gbuffer2data;
+//	RETRIEVE_GBUFFER_PBR(gbuffer2data);
+//	vec4 PBR = gbuffer2data;
+	
+//	float combinedLuminance = luminance(inPixelHDR.rgb) + PBR.z;	//old glow boost
+	float combinedLuminance = luminance(inPixelHDR.rgb);
+	float satCL = saturate(combinedLuminance-0.975f);
+
+//	OutColor.rgb = (inPixelHDR.rgb - 0.975f*(1.0f - saturate(PBR.z)))*satCL + inPixelHDR.rgb*half3(saturate(PBR.z));	//old glow boost
+	OutColor.rgb = (inPixelHDR.rgb - 0.975f)*satCL;
+	OutColor = max(OutColor, 0.0f);
+	OutColor.a = combinedLuminance;
+
+	OUT_Color = half4(1, 1, 1, 0); //OutColor;
+}
+
+#include <common.fh>
+
+// #define func max
+// #define func min
+#define func avg
+
+vec3 avg(vec3 v0, vec3 v1)
+{
+	return (v0 + v1) / 2;
+}
+
+void main()
+{
+	OUT_Color = half4(0);
+	
+	vec2 uv = IO_uv0;
+	float dx = 1.0 / textureSize(S_input_rt, 0).x;
+	float dy = 1.0 / textureSize(S_input_rt, 0).y;
+	
+	vec3 s1 = textureLod(S_input_rt, uv + vec2(-dx, -dy), 0).rgb;
+	vec3 s2 = textureLod(S_input_rt, uv + vec2(+dx, -dy), 0).rgb;
+	vec3 s3 = textureLod(S_input_rt, uv + vec2(-dx, +dy), 0).rgb;
+	vec3 s4 = textureLod(S_input_rt, uv + vec2(+dx, +dy), 0).rgb;
+	
+	if (U_pass) {//antiflicker
+		half s1w = 1 / (Brightness(s1) + 1);
+		half s2w = 1 / (Brightness(s2) + 1);
+		half s3w = 1 / (Brightness(s3) + 1);
+		half s4w = 1 / (Brightness(s4) + 1);
+		half one_div_wsum = 1 / (s1w + s2w + s3w + s4w);
+
+		OUT_Color.rgb = (s1 * s1w + s2 * s2w + s3 * s3w + s4 * s4w) * one_div_wsum;
+	}
+	else {
+		OUT_Color.rgb = (s1 + s2 + s3 + s4) / 4.0;
+	}
+}
+  
+#include <common.fh>
+
+// #define func max
+// #define func min
+#define func avg
+
+vec3 avg(vec3 v0, vec3 v1)
+{
+	return (v0 + v1) / 2;
+}
+
+void main()
+{
+	OUT_Color = half4(0);
+	
+	vec2 uv = IO_uv0;
+	float dx = 1.0 / textureSize(S_input_rt, 0).x;
+	float dy = 1.0 / textureSize(S_input_rt, 0).y;
+	
+	vec3 s1 = textureLod(S_input_rt, uv + vec2(-dx, -dy), 0).rgb;
+	vec3 s2 = textureLod(S_input_rt, uv + vec2(+dx, -dy), 0).rgb;
+	vec3 s3 = textureLod(S_input_rt, uv + vec2(-dx, +dy), 0).rgb;
+	vec3 s4 = textureLod(S_input_rt, uv + vec2(+dx, +dy), 0).rgb;
+	
+	if (U_pass) {//antiflicker
+		half s1w = 1 / (Brightness(s1) + 1);
+		half s2w = 1 / (Brightness(s2) + 1);
+		half s3w = 1 / (Brightness(s3) + 1);
+		half s4w = 1 / (Brightness(s4) + 1);
+		half one_div_wsum = 1 / (s1w + s2w + s3w + s4w);
+
+		OUT_Color.rgb = (s1 * s1w + s2 * s2w + s3 * s3w + s4 * s4w) * one_div_wsum;
+	}
+	else {
+		OUT_Color.rgb = (s1 + s2 + s3 + s4) / 4.0;
+	}
+}
+  
+#include <common.fh>
+
+half3 Median(half3 a, half3 b, half3 c) // 3-tap median filter
+{
+    return a + b + c - min(min(a, b), c) - max(max(a, b), c);
+}
+
+void main()
+{
+	OUT_Color = half4(0);
+	
+	vec2 TexelSize = 1.0f / textureSize(S_input_rt, 0).xy;
+	
+	float2 uv = IO_uv0 + TexelSize * U_bias;
+	
+	half3 pix;
+	pix = texture(S_input_rt, uv).rgb;
+
+	if (U_pass) {//antiflicker
+		
+		half3 pix_xm,pix_xp,pix_ym,pix_yp;
+		pix_xm = texture(S_input_rt, uv - vec2(TexelSize.x, 0)).rgb;
+		pix_xp = texture(S_input_rt, uv + vec2(TexelSize.x, 0)).rgb;
+		pix_ym = texture(S_input_rt, uv - vec2(0, TexelSize.y)).rgb;
+		pix_yp = texture(S_input_rt, uv + vec2(0, TexelSize.y)).rgb;
+
+		pix = Median(pix, pix_xm, pix_xp);
+		pix = Median(pix, pix_ym, pix_yp);
+	
+		// @Timon @Markus optional input limiting? maybe to reduce flicker due to extreme sun and/or local-light reflections? 
+		float scalefac = 0.6;
+		if (Brightness(pix_xm) < U_threshold ) 
+		{
+			pix *= scalefac;
+		}
+		if (Brightness(pix_xp) < U_threshold ) 
+		{
+			pix *= scalefac;
+		}
+		if (Brightness(pix_ym) < U_threshold ) 
+		{
+			pix *= scalefac;
+		}
+		if (Brightness(pix_yp) < U_threshold ) 
+		{
+			pix *= scalefac;
+		}
+	}
+	if (any(isnan(pix)) || any(isinf(pix))) {
+		OUT_Color.rgb = vec3(0);//TODO @Timon @Markus happens a lot likely bad drawcalls
+	}
+	else {
+#ifdef KINO_USE_PATTERN
+		pix *= RTResolve(S_pattern_map, uv).r;
+#else
+		half br = Brightness(pix) * 5f;
+		//if (br > 10.0) {br = 10.0;}
+		// Under-threshold part: quadratic curve
+		half rq = clamp(br - U_color.x, 0, U_color.y); //clamp(br - U_color.x, 0, U_color.y);
+		rq = U_color.z * rq * rq;
+		// Combine and apply the brightness response curve.
+		pix *= max(rq, br - U_threshold) / max(br, 1e-5);
+#endif
+
+		OUT_Color.rgb = pix;
+	}
+}
+#include <common.fh>
+
+// #define func max
+// #define func min
+// #define func avg
+
+float avg(float v0, float v1)
+{
+	return (v0 + v1) / 2;
+}
+
+void main()
+{
+	OUT_Color = half4(0);
+	
+	vec2 uv = IO_uv0;
+	float scale = U_scale;
+#ifdef HIGH_QUALITY
+	// 9-tap bilinear upsampler (tent filter)
+	
+	float dx = scale / textureSize(S_input_rt, 0).x;
+	float dy = scale / textureSize(S_input_rt, 0).y;
+	
+	vec4 s;
+	s  = textureLod(S_input_rt, uv + vec2(-dx, -dy),	0);
+	s += textureLod(S_input_rt, uv + vec2(0, -dy),		0) * 2;
+	s += textureLod(S_input_rt, uv + vec2(dx, -dy),		0);
+	
+	s += textureLod(S_input_rt, uv + vec2(-dx, 0),		0) * 2;
+	s += textureLod(S_input_rt, uv + vec2(0, 0),		0) * 4;
+	s += textureLod(S_input_rt, uv + vec2(dx, 0),		0) * 2;
+	
+	s += textureLod(S_input_rt, uv + vec2(-dx, dy),		0);
+	s += textureLod(S_input_rt, uv + vec2(0, dy),		0) * 2;
+	s += textureLod(S_input_rt, uv + vec2(dx, dy),		0);
+	
+	OUT_Color = U_useralphascale * s / 16.0;
+#elif 1
+	/*LOW_QUALITY*/
+	
+	float dx = 0.5 * scale / V_viewportpixelsize.x;
+	float dy = 0.5 * scale / V_viewportpixelsize.y;
+	
+	vec4 s;
+	s  = textureLod(S_input_rt, uv + vec2(-dx, -dy), 0);
+	s += textureLod(S_input_rt, uv + vec2(+dx, -dy), 0);
+	s += textureLod(S_input_rt, uv + vec2(-dx, +dy), 0);
+	s += textureLod(S_input_rt, uv + vec2(+dx, +dy), 0);
+	
+	OUT_Color = U_useralphascale * s / 4.0;
+#endif
+}
+#include <common.fh>
+
+// #define func max
+// #define func min
+// #define func avg
+
+float avg(float v0, float v1)
+{
+	return (v0 + v1) / 2;
+}
+
+void main()
+{
+	OUT_Color = half4(0);
+	
+	vec2 uv = IO_uv0;
+	float scale = U_scale;
+#ifdef HIGH_QUALITY
+	// 9-tap bilinear upsampler (tent filter)
+	
+	float dx = scale / textureSize(S_input_rt, 0).x;
+	float dy = scale / textureSize(S_input_rt, 0).y;
+	
+	vec4 s;
+	s  = textureLod(S_input_rt, uv + vec2(-dx, -dy),	0);
+	s += textureLod(S_input_rt, uv + vec2(0, -dy),		0) * 2;
+	s += textureLod(S_input_rt, uv + vec2(dx, -dy),		0);
+	
+	s += textureLod(S_input_rt, uv + vec2(-dx, 0),		0) * 2;
+	s += textureLod(S_input_rt, uv + vec2(0, 0),		0) * 4;
+	s += textureLod(S_input_rt, uv + vec2(dx, 0),		0) * 2;
+	
+	s += textureLod(S_input_rt, uv + vec2(-dx, dy),		0);
+	s += textureLod(S_input_rt, uv + vec2(0, dy),		0) * 2;
+	s += textureLod(S_input_rt, uv + vec2(dx, dy),		0);
+	
+	OUT_Color = U_useralphascale * s / 16.0;
+#elif 1
+	/*LOW_QUALITY*/
+	
+	float dx = 0.5 * scale / V_viewportpixelsize.x;
+	float dy = 0.5 * scale / V_viewportpixelsize.y;
+	
+	vec4 s;
+	s  = textureLod(S_input_rt, uv + vec2(-dx, -dy), 0);
+	s += textureLod(S_input_rt, uv + vec2(+dx, -dy), 0);
+	s += textureLod(S_input_rt, uv + vec2(-dx, +dy), 0);
+	s += textureLod(S_input_rt, uv + vec2(+dx, +dy), 0);
+	
+	OUT_Color = U_useralphascale * s / 4.0;
+#endif
+}

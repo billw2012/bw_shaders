@@ -1,0 +1,67 @@
+#include <common.fh>
+
+// #undef GFX_CHROMA_SAMPLES
+
+#ifndef GFX_CHROMA_SAMPLES
+	const int samples = 4;
+	const vec3 color[4] = {
+		vec3(0.667,		-0.083,		0.417),
+		vec3(0.833,		0.583,		0.583),
+		vec3(0.583,		0.833,		0.583),
+		vec3(-0.083,	0.667,		0.417),
+	};
+#endif
+
+void main()
+{
+	const bool Automatic = false;
+	
+	vec2 texcoord = GetFragUV();
+	
+	float Aspect = V_viewportpixelsize.y / V_viewportpixelsize.x;
+// 	float Pixel = 1.0f / V_viewportpixelsize.x;
+	float Pixel = 1.0f / 1920;
+	
+	// Convert UVs to centered coordinates with correct Aspect Ratio
+	vec2 RadialCoord = texcoord;
+	RadialCoord -= vec2(0.5);
+	RadialCoord.y *= Aspect;
+	
+	// Generate radial mask from center (0) to the corner of the screen (1)
+	float Mask = pow(2.0 * length(RadialCoord) * inversesqrt(Aspect * Aspect + 1.0), U_gamma);
+	
+	float OffsetBase = Mask * U_scale * Pixel * 2.0;
+	if (abs(OffsetBase) < Pixel) {
+		OUT_Color = half4(1, 0, 0, 1); //RTResolve(S_input_rt);
+	}
+	else {
+		vec3 BluredImage = vec3(0);
+		
+#ifdef GFX_CHROMA_SAMPLES
+		const int samples = U_samples;
+#endif
+		
+		for (int i = 0; i < samples; ++i) {
+			float p = float(i) / (samples - 1);
+			float Offset = OffsetBase * (p - 0.5) + 1.0;
+			
+			// Scale UVs at center
+			vec2 Position = RadialCoord / Offset;
+			// Convert aspect ratio back to square
+			Position.y /= Aspect;
+			// Convert centered coordinates to UV
+			Position += 0.5;
+			
+#ifdef GFX_CHROMA_SAMPLES
+			vec3 color = V_color[i].rgb;
+#else
+			vec3 color = color[i].rgb;
+#endif
+			BluredImage += color * RTResolve(S_input_rt, Position).rgb;
+		}
+		BluredImage *= 2.0 / samples;
+		
+		OUT_Color.rgb = half3(1, 0, 0); //BluredImage;
+		OUT_Color.a = 0;
+	}
+}

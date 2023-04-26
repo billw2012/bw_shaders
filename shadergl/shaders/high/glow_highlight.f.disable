@@ -1,0 +1,33 @@
+#include <common.fh>
+
+
+
+void main()
+{
+	half4 OutColor = half4(0);
+	CONST float TexelSize = /*g_BlurWidth*/1.0f / V_viewportpixelsize.x;
+	half4 pixels = tex2D(S_input_rt, IO_uv0).rgba;
+	pixels.rgb = pixels.rgb+tex2D(S_input_rt, IO_uv0 + float2(TexelSize, 0)).rgb + tex2D(S_input_rt, IO_uv0 + float2(-TexelSize, 0)).rgb + tex2D(S_input_rt, IO_uv0 + float2(0, TexelSize)).rgb + tex2D(S_input_rt, IO_uv0 + float2(0, -TexelSize)).rgb;
+
+	//ivec2 pix = ivec2(floor(gl_FragCoord.xy) * 2);
+	//half4 pixels = texelFetch(S_input_rt, pix + ivec2(0, 0),0).rgba+ texelFetch(S_input_rt, pix + ivec2(1, 0), 0).rgba+ texelFetch(S_input_rt, pix + ivec2(0, 1), 0).rgba+ texelFetch(S_input_rt, pix + ivec2(1, 1), 0).rgba;
+
+	pixels.rgb = pixels.rgb*0.2f;
+
+	CONST half4 inPixelHDR = pixels;// tex2D(S_input_rt, IO_uv0).rgba; // alpha is extra glowmask
+//	vec4 gbuffer2data;
+//	RETRIEVE_GBUFFER_PBR(gbuffer2data);
+//	vec4 PBR = gbuffer2data;
+	
+//	float combinedLuminance = luminance(inPixelHDR.rgb) + PBR.z;	//old glow boost
+	float combinedLuminance = luminance(inPixelHDR.rgb);
+	float satCL = saturate(combinedLuminance-0.975f);
+
+//	OutColor.rgb = (inPixelHDR.rgb - 0.975f*(1.0f - saturate(PBR.z)))*satCL + inPixelHDR.rgb*half3(saturate(PBR.z));	//old glow boost
+	OutColor.rgb = (inPixelHDR.rgb - 0.975f)*satCL;
+	OutColor = max(OutColor, 0.0f);
+	OutColor.a = combinedLuminance;
+
+	OUT_Color = half4(1, 1, 1, 0); //OutColor;
+}
+
